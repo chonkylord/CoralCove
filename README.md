@@ -1,5 +1,7 @@
 # Coral Cove, a Bricklayer project
 
+![Coral Cove Thumbnail](CoralCoveThumbnail.png)
+
 This is the safe, editable workspace for your Roblox game, Coral Cove. Scripts under `src/` mirror with Studio both ways.
 
 1. Return to the **Welcome to Bricklayer** tab in Bricklayer Editor.
