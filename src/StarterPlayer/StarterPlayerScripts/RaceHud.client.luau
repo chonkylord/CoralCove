@@ -142,7 +142,11 @@ RaceStateChangedEvent.OnClientEvent:Connect(function(payload: { [string]: any })
 		if frozenTime == nil then
 			stopTimerLoop()
 		end
-		StatusLabel.Text = "Race finished!"
+		if payload.champion then
+			StatusLabel.Text = string.format("🏆 Champion: %s — %s", payload.champion, payload.championTime or "")
+		else
+			StatusLabel.Text = "Race finished!"
+		end
 	end
 end)
 

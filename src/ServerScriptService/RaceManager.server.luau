@@ -95,11 +95,135 @@ local function laneOf(target: Racer): number?
 	return nil
 end
 
+local function formatTime(seconds: number): string
+	local minutes = math.floor(seconds / 60)
+	local secs = seconds - minutes * 60
+	return string.format("%d:%05.2f", minutes, secs)
+end
+
+-- Best-time statistic shown next to each player's name on the leaderboard.
+local function getOrMake(parent: Instance, name: string, className: string): Instance
+	local found = parent:FindFirstChild(name)
+	if found then
+		return found
+	end
+	local made = Instance.new(className)
+	made.Name = name
+	made.Parent = parent
+	return made
+end
+
+local function ensureBestStat(player: Player): StringValue
+	local ls = getOrMake(player, "leaderstats", "Folder")
+	local existing = ls:FindFirstChild("Best Time")
+	if existing and existing:IsA("StringValue") then
+		return existing
+	end
+	if existing then
+		existing:Destroy()
+	end
+	local stat = Instance.new("StringValue")
+	stat.Name = "Best Time"
+	stat.Value = "—"
+	stat.Parent = ls
+	return stat
+end
+
+local function recordFinish(player: Player, finishTime: number)
+	local prev = player:GetAttribute("BestTimeSeconds")
+	if type(prev) ~= "number" or finishTime < prev then
+		player:SetAttribute("BestTimeSeconds", finishTime)
+		ensureBestStat(player).Value = formatTime(finishTime)
+	end
+end
+
+Players.PlayerAdded:Connect(ensureBestStat)
+for _, existing in Players:GetPlayers() do
+	task.spawn(ensureBestStat, existing)
+end
+
+-- Champion ceremony: the server's fastest player is crowned on the 1st podium
+-- with fireworks and sound whenever a race ends.
+local CEREMONY_SOUNDS = { "CrowdCheer", "Anthem" }
+
+local function fastestPlayer(): (Player?, number?)
+	local bestPlayer: Player? = nil
+	local bestTime: number? = nil
+	for _, p in Players:GetPlayers() do
+		local t = p:GetAttribute("BestTimeSeconds")
+		if type(t) == "number" and (bestTime == nil or t < bestTime) then
+			bestTime, bestPlayer = t, p
+		end
+	end
+	return bestPlayer, bestTime
+end
+
+local function podiumTop(): Vector3?
+	for _, d in Workspace:GetDescendants() do
+		if d:IsA("Model") and d.Name == "1st Podium" then
+			local cf, size = d:GetBoundingBox()
+			return cf.Position + Vector3.new(0, size.Y / 2 + 3, 0)
+		end
+	end
+	return nil
+end
+
+local function launchFireworks(duration: number)
+	local fw = Workspace:FindFirstChild("Fireworks")
+	if not fw then
+		return
+	end
+	task.spawn(function()
+		local elapsed = 0
+		while elapsed < duration do
+			for _, launcher in fw:GetChildren() do
+				local burst = launcher:FindFirstChild("Burst")
+				if burst and burst:IsA("ParticleEmitter") then
+					burst:Emit(60)
+				end
+			end
+			task.wait(0.45)
+			elapsed += 0.45
+		end
+	end)
+end
+
+local function ceremonySounds(play: boolean)
+	for _, name in CEREMONY_SOUNDS do
+		local s = SoundService:FindFirstChild(name)
+		if s and s:IsA("Sound") then
+			if play then
+				s:Play()
+			else
+				s:Stop()
+			end
+		end
+	end
+end
+
+local function runChampionCeremony()
+	local champ, t = fastestPlayer()
+	if not champ then
+		return
+	end
+	broadcastState({ champion = champ.Name, championTime = if t then formatTime(t) else nil })
+	local char = champ.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local top = podiumTop()
+	if root and root:IsA("BasePart") and top then
+		root.CFrame = CFrame.new(top)
+	end
+	launchFireworks(RESET_DELAY_SECONDS)
+	ceremonySounds(true)
+	print(string.format("[Race] champion %s crowned (%.2fs)", champ.Name, t or -1))
+end
+
 local function resetRace()
 	Race.state = "Idle"
 	Race.racers = {}
 	setBarriers(false)
 	setStartGate(false)
+	ceremonySounds(false)
 	broadcastState()
 	print("[Race] reset to Idle")
 end
@@ -112,6 +236,7 @@ local function enterFinished()
 	setBarriers(false)
 	broadcastState()
 	FinishFanfare:Play()
+	runChampionCeremony()
 	task.spawn(function()
 		task.wait(RESET_DELAY_SECONDS)
 		if getState() == "Finished" then
@@ -257,6 +382,7 @@ local function onZoneTouched(zone: BasePart, kind: WallKind, otherPart: BasePart
 	if racer.lengths >= TOTAL_LENGTHS then
 		local finishTime = Workspace:GetServerTimeNow() - Race.startClock
 		racer.finishTime = finishTime
+		recordFinish(player, finishTime)
 		RaceFinishedEvent:FireAllClients(lane, player.Name, finishTime)
 		print(string.format("[Race] lane %d (%s) FINISHED in %.2fs", lane, player.Name, finishTime))
 		finishRaceEarlyIfAllDone()
