@@ -1,6 +1,6 @@
-# Bricklayer project
+# Coral Cove, a Bricklayer project
 
-This is the safe, editable workspace for your Roblox game. Scripts under `src/` mirror with Studio both ways.
+This is the safe, editable workspace for your Roblox game, Coral Cove. Scripts under `src/` mirror with Studio both ways.
 
 1. Return to the **Welcome to Bricklayer** tab in Bricklayer Editor.
 2. Click **Open Studio**. For a new game, choose Studio's Baseplate template.
