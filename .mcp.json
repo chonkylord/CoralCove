@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "bricklayer": {
+      "command": "/Users/Advait/Desktop/GithubRepos/ClaudeRobloxStudio/node_modules/.bin/tsx",
+      "args": [
+        "/Users/Advait/Desktop/GithubRepos/ClaudeRobloxStudio/packages/companion/src/cli.ts",
+        "--project",
+        ".",
+        "--token",
+        "bricklayer-local",
+        "--port",
+        "34321"
+      ]
+    },
+    "Roblox_Studio": {
+      "command": "/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP",
+      "args": []
+    }
+  }
+}
