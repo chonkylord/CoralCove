@@ -24,12 +24,10 @@ local Hud = PlayerGui:WaitForChild("RaceHud")
 local StatusLabel = Hud:WaitForChild("StatusLabel") :: TextLabel
 local TimerLabel = Hud:WaitForChild("TimerLabel") :: TextLabel
 local LapLabel = Hud:WaitForChild("LapLabel") :: TextLabel
-local ResultsFrame = Hud:WaitForChild("ResultsFrame") :: Frame
 
 local TOTAL_LENGTHS = 2
 
 local myLane: number? = nil
-local resultCount = 0
 
 -- Timer state
 local timerConn: RBXScriptConnection? = nil
@@ -44,15 +42,6 @@ local function formatTime(seconds: number): string
 	local minutes = math.floor(seconds / 60)
 	local secs = seconds - minutes * 60
 	return string.format("%d:%05.2f", minutes, secs)
-end
-
-local function clearResults()
-	for _, child in ResultsFrame:GetChildren() do
-		if child:IsA("TextLabel") and child.Name ~= "Title" then
-			child:Destroy()
-		end
-	end
-	resultCount = 0
 end
 
 local function stopTimerLoop()
@@ -116,11 +105,9 @@ RaceStateChangedEvent.OnClientEvent:Connect(function(payload: { [string]: any })
 		myLane = nil
 		countdownPhase = nil
 		clearTimer()
-		clearResults()
 		StatusLabel.Text = "Touch a starting block to join the race!"
 		LapLabel.Text = ""
 	elseif state == "Waiting" then
-		clearResults()
 		countdownPhase = "Waiting"
 		countdownEndTime = payload.endTime
 		LapLabel.Text = ""
@@ -156,22 +143,10 @@ LapUpdateEvent.OnClientEvent:Connect(function(lane: number, lengths: number, tot
 	end
 end)
 
-RaceFinishedEvent.OnClientEvent:Connect(function(lane: number, playerName: string, finishTime: number)
-	resultCount += 1
-	local entry = Instance.new("TextLabel")
-	entry.Name = "Result" .. resultCount
-	entry.Size = UDim2.new(1, 0, 0, 22)
-	entry.BackgroundTransparency = 1
-	entry.Font = Enum.Font.Gotham
-	entry.TextScaled = true
-	entry.TextXAlignment = Enum.TextXAlignment.Left
-	entry.TextColor3 = Color3.new(1, 1, 1)
-	entry.LayoutOrder = resultCount
-	entry.Text = string.format("#%d  Lane %d — %s: %s", resultCount, lane, playerName, formatTime(finishTime))
-	entry.Parent = ResultsFrame
-
+RaceFinishedEvent.OnClientEvent:Connect(function(lane: number, _playerName: string, finishTime: number)
+	-- Full standings now live on the poolside scoreboard; the HUD only reacts to
+	-- the LOCAL player's finish, freezing their timer at their exact finish time.
 	if lane == myLane then
-		-- Freeze the local player's timer at their exact finish time.
 		freezeTimer(finishTime)
 		LapLabel.Text = string.format("Finished in %s!", formatTime(finishTime))
 		StatusLabel.Text = "You finished!"

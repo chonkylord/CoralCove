@@ -12,6 +12,9 @@ local Workspace = game:GetService("Workspace")
 
 local SwimConfig = require(ReplicatedStorage:WaitForChild("SwimConfig"))
 
+local RaceEvents = ReplicatedStorage:WaitForChild("RaceEvents")
+local EquipStyleEvent = RaceEvents:WaitForChild("EquipStyle") :: RemoteEvent
+
 local player = Players.LocalPlayer
 local character = script.Parent :: Model
 local humanoid = character:WaitForChild("Humanoid") :: Humanoid
@@ -24,22 +27,48 @@ local breathFill = breathBG:WaitForChild("BreathBarFill") :: Frame
 local breathLabel = breathBG:WaitForChild("BreathLabel") :: TextLabel
 local styleLabel = hud:WaitForChild("StyleLabel") :: TextLabel
 
-local currentStyleKey = "Freestyle"
 local momentum = 0 -- 0..1 how far into the startup ramp we are
 local breath = SwimConfig.breathMax
 local gasping = false
 
+-- A style is usable only if it's a default style or the server has flagged it
+-- unlocked (Unlocked_<Style> attribute, set by PlayerData when you buy it).
+local function isUnlocked(key: string): boolean
+	local style = SwimConfig.styles[key]
+	if style and style.default then
+		return true
+	end
+	return player:GetAttribute("Unlocked_" .. key) == true
+end
+
+-- The equipped stroke is authoritative on the server (EquippedStyle attribute);
+-- the client just reflects it, defaulting to Freestyle before it replicates.
+local function equippedFromAttr(): string
+	local eq = player:GetAttribute("EquippedStyle")
+	if type(eq) == "string" and SwimConfig.styles[eq] then
+		return eq
+	end
+	return "Freestyle"
+end
+
+local currentStyleKey = equippedFromAttr()
+
 local function updateStyleLabel()
+	-- Only list strokes the player has unlocked; locked ones stay hidden until
+	-- bought in the shop. Each keeps its real hotkey number from SwimConfig.order
+	-- (so Breaststroke is always [2], etc.) even when earlier strokes are hidden.
 	local parts = {}
 	for i, key in SwimConfig.order do
-		local s = SwimConfig.styles[key]
-		if key == currentStyleKey then
-			table.insert(parts, string.format("[%d] > %s <", i, s.name))
-		else
-			table.insert(parts, string.format("[%d] %s", i, s.name))
+		if isUnlocked(key) then
+			local s = SwimConfig.styles[key]
+			if key == currentStyleKey then
+				table.insert(parts, string.format("[%d] ▶ %s", i, s.name))
+			else
+				table.insert(parts, string.format("[%d] %s", i, s.name))
+			end
 		end
 	end
-	styleLabel.Text = table.concat(parts, "     ")
+	styleLabel.Text = table.concat(parts, "   ")
 end
 updateStyleLabel()
 
@@ -47,10 +76,34 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 	if gameProcessed then
 		return
 	end
-	local map = { [Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3 }
+	local map = {
+		[Enum.KeyCode.One] = 1,
+		[Enum.KeyCode.Two] = 2,
+		[Enum.KeyCode.Three] = 3,
+		[Enum.KeyCode.Four] = 4,
+		[Enum.KeyCode.Five] = 5,
+	}
 	local idx = map[input.KeyCode]
-	if idx and SwimConfig.order[idx] then
-		currentStyleKey = SwimConfig.order[idx]
+	local key = idx and SwimConfig.order[idx]
+	if not key then
+		return
+	end
+	if isUnlocked(key) then
+		-- Ask the server to equip; the EquippedStyle attribute change applies it.
+		EquipStyleEvent:FireServer(key)
+	else
+		local s = SwimConfig.styles[key]
+		styleLabel.Text = string.format("%s is locked — buy it in the 🛒 Shop (%d pts)", s.name, s.cost)
+	end
+end)
+
+-- Reflect server-driven changes: equipping a style, or a purchase landing.
+player:GetAttributeChangedSignal("EquippedStyle"):Connect(function()
+	currentStyleKey = equippedFromAttr()
+	updateStyleLabel()
+end)
+player.AttributeChanged:Connect(function(name: string)
+	if string.sub(name, 1, 9) == "Unlocked_" then
 		updateStyleLabel()
 	end
 end)

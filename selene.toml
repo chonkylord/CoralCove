@@ -1,2 +1,2 @@
-std = "roblox"
+std = "roblox+testez"
 exclude = ["**/*.conflict.luau"]

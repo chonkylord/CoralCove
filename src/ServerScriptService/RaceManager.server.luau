@@ -7,13 +7,19 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
+
+-- Player economy (points, unlocks, best/last times) lives here; RaceManager just
+-- reports finishes to it and relays the points award back to the finisher.
+local PlayerData = require(ServerStorage:WaitForChild("PlayerData"))
 
 local RaceEvents = ReplicatedStorage:WaitForChild("RaceEvents")
 local RaceStateChangedEvent = RaceEvents:WaitForChild("RaceStateChanged") :: RemoteEvent
 local LapUpdateEvent = RaceEvents:WaitForChild("LapUpdate") :: RemoteEvent
 local RaceFinishedEvent = RaceEvents:WaitForChild("RaceFinished") :: RemoteEvent
+local PointsAwardedEvent = RaceEvents:WaitForChild("PointsAwarded") :: RemoteEvent
 
 local Pool = Workspace:WaitForChild("OlympicPool")
 local TurnZone = Pool:WaitForChild("TurnZone") :: BasePart
@@ -101,46 +107,70 @@ local function formatTime(seconds: number): string
 	return string.format("%d:%05.2f", minutes, secs)
 end
 
--- Best-time statistic shown next to each player's name on the leaderboard.
-local function getOrMake(parent: Instance, name: string, className: string): Instance
-	local found = parent:FindFirstChild(name)
-	if found then
-		return found
-	end
-	local made = Instance.new(className)
-	made.Name = name
-	made.Parent = parent
-	return made
-end
-
-local function ensureBestStat(player: Player): StringValue
-	local ls = getOrMake(player, "leaderstats", "Folder")
-	local existing = ls:FindFirstChild("Best Time")
-	if existing and existing:IsA("StringValue") then
-		return existing
-	end
-	if existing then
-		existing:Destroy()
-	end
-	local stat = Instance.new("StringValue")
-	stat.Name = "Best Time"
-	stat.Value = "—"
-	stat.Parent = ls
-	return stat
-end
-
-local function recordFinish(player: Player, finishTime: number)
-	local prev = player:GetAttribute("BestTimeSeconds")
-	if type(prev) ~= "number" or finishTime < prev then
-		player:SetAttribute("BestTimeSeconds", finishTime)
-		ensureBestStat(player).Value = formatTime(finishTime)
+-- Poolside results board (physical SurfaceGui at the east end of the pool). The
+-- server owns it so everyone sees the same standings — replacing the old on-HUD
+-- results panel. All lookups are optional so a missing board never breaks racing.
+local BoardStatus: TextLabel? = nil
+local BoardList: Frame? = nil
+do
+	local sb = Workspace:FindFirstChild("PoolScoreboard")
+	local screen = sb and sb:FindFirstChild("Screen")
+	local surf = screen and screen:FindFirstChild("Board")
+	local bg = surf and surf:FindFirstChild("BG")
+	if bg then
+		local s = bg:FindFirstChild("Status")
+		local l = bg:FindFirstChild("ResultsList")
+		BoardStatus = if s and s:IsA("TextLabel") then s else nil
+		BoardList = if l and l:IsA("Frame") then l else nil
+	else
+		warn("[Race] PoolScoreboard not found — results board disabled")
 	end
 end
 
-Players.PlayerAdded:Connect(ensureBestStat)
-for _, existing in Players:GetPlayers() do
-	task.spawn(ensureBestStat, existing)
+local MEDALS = { "🥇", "🥈", "🥉" }
+local boardResultCount = 0
+
+local function setBoardStatus(text: string)
+	if BoardStatus then
+		BoardStatus.Text = text
+	end
 end
+
+local function clearBoardResults()
+	boardResultCount = 0
+	if not BoardList then
+		return
+	end
+	for _, child in BoardList:GetChildren() do
+		if child:IsA("TextLabel") then
+			child:Destroy()
+		end
+	end
+end
+
+local function addBoardResult(lane: number, name: string, finishTime: number)
+	if not BoardList then
+		return
+	end
+	boardResultCount += 1
+	local rank = boardResultCount
+	local row = Instance.new("TextLabel")
+	row.Name = "Result" .. rank
+	row.Size = UDim2.new(1, 0, 0, 54)
+	row.BackgroundTransparency = 1
+	row.Font = Enum.Font.GothamBold
+	row.TextScaled = true
+	row.TextXAlignment = Enum.TextXAlignment.Left
+	row.LayoutOrder = rank
+	row.TextColor3 = if rank == 1 then Color3.fromRGB(255, 215, 90) else Color3.fromRGB(235, 240, 250)
+	local badge = MEDALS[rank] or ("#" .. rank)
+	row.Text = string.format("%s  Lane %d — %s   %s", badge, lane, name, formatTime(finishTime))
+	row.Parent = BoardList
+end
+
+-- leaderstats (Points + Best Time) and best/last times are owned by PlayerData
+-- and set up by ShopManager on join. The champion ceremony below still reads the
+-- BestTimeSeconds attribute, which PlayerData keeps up to date on every finish.
 
 -- Champion ceremony: the server's fastest player is crowned on the 1st podium
 -- with fireworks and sound whenever a race ends.
@@ -215,6 +245,7 @@ local function runChampionCeremony()
 	end
 	launchFireworks(RESET_DELAY_SECONDS)
 	ceremonySounds(true)
+	setBoardStatus(string.format("🏆 Champion: %s — %s", champ.Name, if t then formatTime(t) else "—"))
 	print(string.format("[Race] champion %s crowned (%.2fs)", champ.Name, t or -1))
 end
 
@@ -224,6 +255,8 @@ local function resetRace()
 	setBarriers(false)
 	setStartGate(false)
 	ceremonySounds(false)
+	-- keep the finished standings on the board; just update the status line
+	setBoardStatus("Waiting for racers…")
 	broadcastState()
 	print("[Race] reset to Idle")
 end
@@ -234,6 +267,7 @@ local function enterFinished()
 	end
 	Race.state = "Finished"
 	setBarriers(false)
+	setBoardStatus("🏁 Race finished!")
 	broadcastState()
 	FinishFanfare:Play()
 	runChampionCeremony()
@@ -259,6 +293,7 @@ local function startCountdown()
 		return
 	end
 	Race.state = "Countdown"
+	setBoardStatus("Get ready…")
 	broadcastState({ endTime = Workspace:GetServerTimeNow() + COUNTDOWN_SECONDS })
 
 	task.spawn(function()
@@ -276,6 +311,7 @@ local function startCountdown()
 		Race.startClock = Workspace:GetServerTimeNow()
 		setBarriers(true)
 		setStartGate(false) -- drop the gate on GO so racers can dive in
+		setBoardStatus("🏊 Race in progress…")
 		broadcastState({ serverStartTime = Race.startClock })
 		StartHorn:Play()
 		local racerCount = 0
@@ -299,6 +335,8 @@ local function tryStartJoinWindow()
 	end
 	Race.state = "Waiting"
 	setStartGate(true) -- raise the gate so nobody dives in before GO
+	clearBoardResults() -- fresh race: wipe the previous standings
+	setBoardStatus("🏊 Racers, take your marks!")
 	broadcastState({ endTime = Workspace:GetServerTimeNow() + JOIN_WINDOW_SECONDS })
 
 	task.spawn(function()
@@ -382,9 +420,19 @@ local function onZoneTouched(zone: BasePart, kind: WallKind, otherPart: BasePart
 	if racer.lengths >= TOTAL_LENGTHS then
 		local finishTime = Workspace:GetServerTimeNow() - Race.startClock
 		racer.finishTime = finishTime
-		recordFinish(player, finishTime)
+		local result = PlayerData.recordFinish(player, finishTime)
+		addBoardResult(lane, player.Name, finishTime)
 		RaceFinishedEvent:FireAllClients(lane, player.Name, finishTime)
-		print(string.format("[Race] lane %d (%s) FINISHED in %.2fs", lane, player.Name, finishTime))
+		PointsAwardedEvent:FireClient(player, result.awarded, result.newTotal, result.faster, result.isBest)
+		print(
+			string.format(
+				"[Race] lane %d (%s) FINISHED in %.2fs (+%d pts)",
+				lane,
+				player.Name,
+				finishTime,
+				result.awarded
+			)
+		)
 		finishRaceEarlyIfAllDone()
 	end
 end
