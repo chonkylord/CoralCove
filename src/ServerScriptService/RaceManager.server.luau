@@ -1,7 +1,9 @@
 --!strict
--- Server-authoritative swimming race: players join by standing on a numbered
--- starting block, then alternate touching the far (Turn) and near (Finish)
--- wall of their lane to complete lengths.
+-- Server-authoritative swimming race. Players join by standing on a numbered
+-- starting block. Once racing, they must reach the far wall (TurnZone) and swim
+-- back to the near wall (FinishZone) to complete the two lengths; touching the
+-- FinishZone on the way back seals their time. Invisible barriers confine
+-- racers to the pool while a race is running.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,7 +16,10 @@ local LapUpdateEvent = RaceEvents:WaitForChild("LapUpdate") :: RemoteEvent
 local RaceFinishedEvent = RaceEvents:WaitForChild("RaceFinished") :: RemoteEvent
 
 local Pool = Workspace:WaitForChild("OlympicPool")
-local Checkpoints = Pool:WaitForChild("Checkpoints")
+local TurnZone = Pool:WaitForChild("TurnZone") :: BasePart
+local FinishZone = Pool:WaitForChild("FinishZone") :: BasePart
+local Barriers = Pool:WaitForChild("Barriers")
+local StartGate = Pool:WaitForChild("StartGate") :: BasePart
 
 local CountdownBeep = SoundService:WaitForChild("CountdownBeep") :: Sound
 local StartHorn = SoundService:WaitForChild("StartHorn") :: Sound
@@ -37,11 +42,9 @@ type Racer = {
 	finishTime: number?,
 }
 
--- Mutable race state lives behind a table, not bare locals: task.spawn
--- closures below run long after they're created, and bare-local/table-field
--- narrowing doesn't account for reassignment that happens in between. A
--- getter function call is opaque to the checker's flow analysis, so it
--- always yields the full RaceState union instead of a stale narrowed literal.
+-- Mutable race state lives behind a table, not bare locals: task.spawn closures
+-- below run long after they're created, and a getter call is opaque to the type
+-- checker's flow analysis so it always yields the full RaceState union.
 local Race = {
 	state = "Idle" :: RaceState,
 	racers = {} :: { [number]: Racer },
@@ -52,26 +55,61 @@ local function getState(): RaceState
 	return Race.state
 end
 
+-- Side/end walls + lane dividers: solid only while a race is running, so lanes
+-- are locked and racers can't climb out mid-race.
+local function setBarriers(enabled: boolean)
+	for _, wall in Barriers:GetChildren() do
+		if wall:IsA("BasePart") then
+			wall.CanCollide = enabled
+		end
+	end
+end
+
+-- The start gate is raised the OPPOSITE way: solid during the join window and
+-- countdown to prevent an early dive, and dropped at "GO".
+local function setStartGate(raised: boolean)
+	StartGate.CanCollide = raised
+end
+
 local function broadcastState(extra: { [string]: any }?)
 	local payload: { [string]: any } = extra or {}
 	payload.state = getState()
 	RaceStateChangedEvent:FireAllClients(payload)
 end
 
+local function findRacerByPlayer(player: Player): Racer?
+	for _, racer in Race.racers do
+		if racer.player == player then
+			return racer
+		end
+	end
+	return nil
+end
+
+local function laneOf(target: Racer): number?
+	for lane, racer in Race.racers do
+		if racer == target then
+			return lane
+		end
+	end
+	return nil
+end
+
 local function resetRace()
 	Race.state = "Idle"
 	Race.racers = {}
+	setBarriers(false)
+	setStartGate(false)
 	broadcastState()
 	print("[Race] reset to Idle")
 end
 
-local function finishRaceEarlyIfAllDone()
-	for _, racer in Race.racers do
-		if not racer.finishTime then
-			return
-		end
+local function enterFinished()
+	if getState() == "Finished" then
+		return
 	end
 	Race.state = "Finished"
+	setBarriers(false)
 	broadcastState()
 	FinishFanfare:Play()
 	task.spawn(function()
@@ -82,12 +120,21 @@ local function finishRaceEarlyIfAllDone()
 	end)
 end
 
+local function finishRaceEarlyIfAllDone()
+	for _, racer in Race.racers do
+		if not racer.finishTime then
+			return
+		end
+	end
+	enterFinished()
+end
+
 local function startCountdown()
 	if getState() ~= "Waiting" then
 		return
 	end
 	Race.state = "Countdown"
-	broadcastState({ seconds = COUNTDOWN_SECONDS })
+	broadcastState({ endTime = Workspace:GetServerTimeNow() + COUNTDOWN_SECONDS })
 
 	task.spawn(function()
 		for _ = 1, COUNTDOWN_SECONDS do
@@ -101,7 +148,9 @@ local function startCountdown()
 			return
 		end
 		Race.state = "Racing"
-		Race.startClock = workspace:GetServerTimeNow()
+		Race.startClock = Workspace:GetServerTimeNow()
+		setBarriers(true)
+		setStartGate(false) -- drop the gate on GO so racers can dive in
 		broadcastState({ serverStartTime = Race.startClock })
 		StartHorn:Play()
 		local racerCount = 0
@@ -113,12 +162,7 @@ local function startCountdown()
 		task.spawn(function()
 			task.wait(RACE_TIMEOUT_SECONDS)
 			if getState() == "Racing" then
-				Race.state = "Finished"
-				broadcastState()
-				task.wait(RESET_DELAY_SECONDS)
-				if getState() == "Finished" then
-					resetRace()
-				end
+				enterFinished()
 			end
 		end)
 	end)
@@ -129,7 +173,8 @@ local function tryStartJoinWindow()
 		return
 	end
 	Race.state = "Waiting"
-	broadcastState({ seconds = JOIN_WINDOW_SECONDS })
+	setStartGate(true) -- raise the gate so nobody dives in before GO
+	broadcastState({ endTime = Workspace:GetServerTimeNow() + JOIN_WINDOW_SECONDS })
 
 	task.spawn(function()
 		task.wait(JOIN_WINDOW_SECONDS)
@@ -169,7 +214,10 @@ local function joinLane(player: Player, lane: number)
 	end
 end
 
-local function onCheckpointTouched(pad: BasePart, lane: number, kind: WallKind, otherPart: BasePart)
+-- Lane-agnostic checkpoint: whichever racer swims into a zone advances, as long
+-- as it's the wall they're currently expecting (Turn at the far end, then Finish
+-- back at the near end).
+local function onZoneTouched(zone: BasePart, kind: WallKind, otherPart: BasePart)
 	if getState() ~= "Racing" then
 		return
 	end
@@ -181,40 +229,46 @@ local function onCheckpointTouched(pad: BasePart, lane: number, kind: WallKind, 
 	if not player then
 		return
 	end
-
-	local racer = Race.racers[lane]
-	if not racer or racer.player ~= player or racer.finishTime then
-		return
-	end
-	if racer.expecting ~= kind then
+	local racer = findRacerByPlayer(player)
+	if not racer or racer.finishTime or racer.expecting ~= kind then
 		return
 	end
 
+	local lane = laneOf(racer) or 0
 	racer.lengths += 1
 	racer.expecting = if kind == "Turn" then "Finish" else "Turn"
 	LapUpdateEvent:FireAllClients(lane, racer.lengths, TOTAL_LENGTHS)
-	print(string.format("[Race] lane %d (%s) completed length %d/%d", lane, player.Name, racer.lengths, TOTAL_LENGTHS))
+	print(
+		string.format(
+			"[Race] lane %d (%s) reached %s — length %d/%d",
+			lane,
+			player.Name,
+			kind,
+			racer.lengths,
+			TOTAL_LENGTHS
+		)
+	)
 
-	local splash = pad:FindFirstChild("Splash")
+	local splash = zone:FindFirstChild("Splash")
 	if splash and splash:IsA("ParticleEmitter") then
 		splash:Emit(40)
 	end
 
 	if racer.lengths >= TOTAL_LENGTHS then
-		local finishTime = workspace:GetServerTimeNow() - Race.startClock
+		local finishTime = Workspace:GetServerTimeNow() - Race.startClock
 		racer.finishTime = finishTime
 		RaceFinishedEvent:FireAllClients(lane, player.Name, finishTime)
-		print(string.format("[Race] lane %d (%s) finished in %.2fs", lane, player.Name, finishTime))
+		print(string.format("[Race] lane %d (%s) FINISHED in %.2fs", lane, player.Name, finishTime))
 		finishRaceEarlyIfAllDone()
 	end
 end
 
+-- Starting blocks: touch one to join its lane.
 for _, child in Pool:GetChildren() do
 	if child:IsA("BasePart") then
 		local lane = child:GetAttribute("Lane")
 		local kind = child:GetAttribute("Kind")
 		if typeof(lane) == "number" and kind == nil then
-			-- Starting block for this lane: touch it to join.
 			child.Touched:Connect(function(otherPart: BasePart)
 				local character = otherPart.Parent
 				if not character or not character:IsA("Model") then
@@ -229,17 +283,12 @@ for _, child in Pool:GetChildren() do
 	end
 end
 
-for _, child in Checkpoints:GetChildren() do
-	if child:IsA("BasePart") then
-		local lane = child:GetAttribute("Lane")
-		local kind = child:GetAttribute("Kind")
-		if typeof(lane) == "number" and (kind == "Turn" or kind == "Finish") then
-			child.Touched:Connect(function(otherPart: BasePart)
-				onCheckpointTouched(child, lane, kind :: WallKind, otherPart)
-			end)
-		end
-	end
-end
+TurnZone.Touched:Connect(function(otherPart: BasePart)
+	onZoneTouched(TurnZone, "Turn", otherPart)
+end)
+FinishZone.Touched:Connect(function(otherPart: BasePart)
+	onZoneTouched(FinishZone, "Finish", otherPart)
+end)
 
 Players.PlayerRemoving:Connect(function(player: Player)
 	for lane, racer in Race.racers do

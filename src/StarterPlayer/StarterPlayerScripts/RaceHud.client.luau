@@ -36,6 +36,10 @@ local timerConn: RBXScriptConnection? = nil
 local serverStartTime: number? = nil
 local frozenTime: number? = nil
 
+-- Countdown state (ticks off the server clock so 8..1 and 3..2..1 are live)
+local countdownPhase: string? = nil -- "Waiting" | "Countdown" | nil
+local countdownEndTime: number? = nil
+
 local function formatTime(seconds: number): string
 	local minutes = math.floor(seconds / 60)
 	local secs = seconds - minutes * 60
@@ -88,6 +92,19 @@ local function startTimer(startTime: number)
 	end)
 end
 
+-- Live countdown display, recomputed each frame from the server end-time.
+RunService.Heartbeat:Connect(function()
+	if countdownPhase == nil or countdownEndTime == nil then
+		return
+	end
+	local remaining = math.max(0, math.ceil(countdownEndTime - Workspace:GetServerTimeNow()))
+	if countdownPhase == "Waiting" then
+		StatusLabel.Text = string.format("Race starts in %d — touch a starting block to join!", remaining)
+	elseif countdownPhase == "Countdown" then
+		StatusLabel.Text = if remaining > 0 then string.format("Get ready... %d", remaining) else "GO!"
+	end
+end)
+
 RaceStateChangedEvent.OnClientEvent:Connect(function(payload: { [string]: any })
 	local state = payload.state
 
@@ -97,19 +114,21 @@ RaceStateChangedEvent.OnClientEvent:Connect(function(payload: { [string]: any })
 
 	if state == "Idle" then
 		myLane = nil
+		countdownPhase = nil
 		clearTimer()
 		clearResults()
 		StatusLabel.Text = "Touch a starting block to join the race!"
 		LapLabel.Text = ""
 	elseif state == "Waiting" then
 		clearResults()
-		local seconds = payload.seconds or 0
-		StatusLabel.Text = string.format("Race forming — starts in %ds. Touch a starting block to join!", seconds)
+		countdownPhase = "Waiting"
+		countdownEndTime = payload.endTime
 		LapLabel.Text = ""
 	elseif state == "Countdown" then
-		local seconds = payload.seconds or 0
-		StatusLabel.Text = string.format("Get ready... %d", seconds)
+		countdownPhase = "Countdown"
+		countdownEndTime = payload.endTime
 	elseif state == "Racing" then
+		countdownPhase = nil
 		StatusLabel.Text = if myLane then "GO! Swim!" else "Race in progress"
 		if myLane then
 			LapLabel.Text = string.format("Lane %d — length 0/%d", myLane, TOTAL_LENGTHS)
@@ -118,6 +137,7 @@ RaceStateChangedEvent.OnClientEvent:Connect(function(payload: { [string]: any })
 			startTimer(payload.serverStartTime)
 		end
 	elseif state == "Finished" then
+		countdownPhase = nil
 		-- If the local player finished, keep their frozen time; otherwise stop.
 		if frozenTime == nil then
 			stopTimerLoop()
