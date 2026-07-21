@@ -11,7 +11,7 @@ local RaceStateChangedEvent = RaceEvents:WaitForChild("RaceStateChanged") :: Rem
 
 -- Both are free Creator Store audio assets. Keeping the IDs here makes it easy
 -- to audition or swap the mood later without touching the race code.
-local ISLAND_AMBIENCE_ID = "rbxassetid://9043853096" -- Tropical Island, APM Music
+local ISLAND_AMBIENCE_ID = "rbxassetid://95278058289420" -- Island Breeze, Cadenza
 local RACE_CROWD_ID = "rbxassetid://9119562631" -- Stadium Crowd 1, Pro Sound Effects
 
 local FADE_TIME = 1.35
