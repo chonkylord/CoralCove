@@ -7,6 +7,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
@@ -424,6 +425,10 @@ local function onZoneTouched(zone: BasePart, kind: WallKind, otherPart: BasePart
 		addBoardResult(lane, player.Name, finishTime)
 		RaceFinishedEvent:FireAllClients(lane, player.Name, finishTime)
 		PointsAwardedEvent:FireClient(player, result.awarded, result.newTotal, result.faster, result.isBest)
+		local coachFinishSignal = ServerScriptService:FindFirstChild("CoachRaceFinished")
+		if coachFinishSignal and coachFinishSignal:IsA("BindableEvent") then
+			coachFinishSignal:Fire(player, finishTime, result.isBest)
+		end
 		print(
 			string.format(
 				"[Race] lane %d (%s) FINISHED in %.2fs (+%d pts)",
